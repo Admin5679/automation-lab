@@ -1,0 +1,69 @@
+---
+- name: Install and Validate ssacli Package
+  hosts: ssacli_servers
+  become: true
+  gather_facts: true
+
+  vars:
+    ssacli_package: "/root/AutomationLab/packages/ssacli-6.65-9.0_amd64.deb"
+
+  tasks:
+
+    - name: Display target server
+      debug:
+        msg: "Starting ssacli installation on {{ inventory_hostname }}"
+
+    - name: Copy ssacli package to target server
+      copy:
+        src: "{{ ssacli_package }}"
+        dest: /tmp/ssacli.deb
+        mode: '0644'
+
+    - name: Install ssacli package
+      apt:
+        deb: /tmp/ssacli.deb
+        state: present
+      register: install_result
+
+    - name: Verify package installation
+      shell: dpkg -l | grep -i ssacli
+      register: ssacli_check
+      changed_when: false
+      failed_when: false
+
+    - name: Get installed package details
+      command: dpkg -s ssacli
+      register: package_details
+      changed_when: false
+      failed_when: false
+
+    - name: Get ssacli version
+      command: ssacli version
+      register: ssacli_version
+      changed_when: false
+      failed_when: false
+
+    - name: Display SUCCESS status
+      debug:
+        msg:
+          - "SERVER      : {{ inventory_hostname }}"
+          - "STATUS      : SUCCESS"
+          - "PACKAGE     : ssacli"
+          - "DETAILS:"
+          - "{{ package_details.stdout }}"
+          - "VERSION:"
+          - "{{ ssacli_version.stdout }}"
+      when: ssacli_check.rc == 0
+
+    - name: Display FAILED status
+      debug:
+        msg:
+          - "SERVER      : {{ inventory_hostname }}"
+          - "STATUS      : FAILED"
+          - "PACKAGE     : ssacli not installed"
+      when: ssacli_check.rc != 0
+
+    - name: Cleanup package file
+      file:
+        path: /tmp/ssacli.deb
+        state: absent

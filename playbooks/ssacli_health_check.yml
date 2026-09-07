@@ -1,0 +1,257 @@
+---
+- name: Check HPE Smart Array disk health
+  hosts: all
+  become: true
+  gather_facts: true
+  serial: 1
+
+  vars:
+    ssacli_package_name: "ssacli"
+    ssacli_deb_source: "../files/ssacli.deb"
+    ssacli_deb_remote: "/tmp/ssacli.deb"
+    ssacli_report_directory: "/var/tmp/ssacli-reports"
+    ssacli_report_file: >-
+      {{ ssacli_report_directory }}/ssacli_health_
+      {{ inventory_hostname }}_
+      {{ ansible_date_time.iso8601_basic_short }}.txt
+
+  tasks:
+    - name: Confirm target operating system is Debian based
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family == "Debian"
+        fail_msg: >-
+          This playbook supports Debian or Ubuntu systems only.
+          Detected OS family: {{ ansible_os_family }}
+        success_msg: "Debian-based operating system detected."
+
+    - name: Check whether ssacli executable is available
+      ansible.builtin.command:
+        cmd: command -v ssacli
+      register: ssacli_command_check
+      changed_when: false
+      failed_when: false
+
+    - name: Check whether ssacli package is installed
+      ansible.builtin.command:
+        cmd: dpkg-query -W -f='${Status}' {{ ssacli_package_name }}
+      register: ssacli_package_check
+      changed_when: false
+      failed_when: false
+
+    - name: Set initial ssacli installation status
+      ansible.builtin.set_fact:
+        ssacli_was_installed: >-
+          {{
+            ssacli_command_check.rc == 0 or
+            (
+              ssacli_package_check.rc == 0 and
+              'install ok installed' in ssacli_package_checkstdout
+            )
+          }}
+
+    - name: Display existing installation status
+      ansible.builtin.debug:
+        msg: >-
+          ssacli installed before playbook:
+          {{ ssacli_was_installed }}
+
+    - name: Copy ssacli Debian package to target server
+      ansible.builtin.copy:
+        src: "{{ ssacli_deb_source }}"
+        dest: "{{ ssacli_deb_remote }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when: not ssacli_was_installed
+
+    - name: Install ssacli Debian package
+      ansible.builtin.apt:
+        deb: "{{ ssacli_deb_remote }}"
+        state: present
+      register: ssacli_install_result
+      when: not ssacli_was_installed
+
+    - name: Remove copied Debian package
+      ansible.builtin.file:
+        path: "{{ ssacli_deb_remote }}"
+        state: absent
+      when: not ssacli_was_installed
+
+    - name: Verify ssacli after installation
+      ansible.builtin.command:
+        cmd: command -v ssacli
+      register: ssacli_verify
+      changed_when: false
+      failed_when: false
+
+    - name: Stop when ssacli is unavailable
+      ansible.builtin.fail:
+        msg: >-
+          ssacli is not available after the installation attempt.
+          Verify the Debian package architecture, compatibility,
+          dependencies, and AWX become permissions.
+      when: ssacli_verify.rc != 0
+
+    - name: Get ssacli package version
+      ansible.builtin.command:
+        cmd: dpkg-query -W -f='${Version}' {{ ssacli_package_name }}
+      register: ssacli_version
+      changed_when: false
+      failed_when: false
+
+    - name: Check HPE Smart Array controller status
+      ansible.builtin.command:
+        cmd: ssacli ctrl all show status
+      register: controller_status
+      changed_when: false
+      failed_when: false
+
+    - name: Get complete Smart Array configuration
+      ansible.builtin.command:
+        cmd: ssacli ctrl all show config
+      register: array_configuration
+      changed_when: false
+      failed_when: false
+
+    - name: Get detailed Smart Array configuration
+      ansible.builtin.command:
+        cmd: ssacli ctrl all show config detail
+      register: array_configuration_detail
+      changed_when: false
+      failed_when: false
+
+    - name: Get physical-drive status
+      ansible.builtin.command:
+        cmd: ssacli ctrl all pd all show status
+      register: physical_drive_status
+      changed_when: false
+      failed_when: false
+
+    - name: Get logical-drive status
+      ansible.builtin.command:
+        cmd: ssacli ctrl all ld all show status
+      register: logical_drive_status
+      changed_when: false
+      failed_when: false
+
+    - name: Combine health-check output
+      ansible.builtin.set_fact:
+        ssacli_complete_output: |
+          ============================================================
+          HPE SMART ARRAY HEALTH REPORT
+          ============================================================
+          Hostname             : {{ inventory_hostname }}
+          Report time          : {{ ansible_date_time.iso8601 }}
+          Operating system     : {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Kernel               : {{ ansible_kernel }}
+          ssacli installed     : Yes
+          Installed beforehand : {{ ssacli_was_installed }}
+          ssacli version       : {{ ssacli_version.stdout | default('Unknown', true) }}
+
+          ============================================================
+          CONTROLLER STATUS
+          Command RC: {{ controller_status.rc }}
+          ============================================================
+          {{ controller_status.stdout | default('No output returned', true) }}
+
+          {% if controller_status.stderr | default('') | length > 0 %}
+          Controller command error:
+          {{ controller_status.stderr }}
+          {% endif %}
+
+          ============================================================
+          LOGICAL DRIVE STATUS
+          Command RC: {{ logical_drive_status.rc }}
+          ============================================================
+          {{ logical_drive_status.stdout | default('No output returned', true) }}
+
+          {% if logical_drive_status.stderr | default('') | length > 0 %}
+          Logical-drive command error:
+          {{ logical_drive_status.stderr }}
+          {% endif %}
+
+          ============================================================
+          PHYSICAL DRIVE STATUS
+          Command RC: {{ physical_drive_status.rc }}
+          ============================================================
+          {{ physical_drive_status.stdout | default('No output returned', true) }}
+
+          {% if physical_drive_status.stderr | default('') | length > 0 %}
+          Physical-drive command error:
+          {{ physical_drive_status.stderr }}
+          {% endif %}
+
+          ============================================================
+          ARRAY CONFIGURATION
+          Command RC: {{ array_configuration.rc }}
+          ============================================================
+          {{ array_configuration.stdout | default('No output returned', true) }}
+
+          {% if array_configuration.stderr | default('') | length > 0 %}
+          Configuration command error:
+          {{ array_configuration.stderr }}
+          {% endif %}
+
+          ============================================================
+          DETAILED CONFIGURATION
+          Command RC: {{ array_configuration_detail.rc }}
+          ============================================================
+          {{ array_configuration_detail.stdout | default('No output returned', true) }}
+
+          {% if array_configuration_detail.stderr | default('') | length > 0 %}
+          Detailed configuration command error:
+          {{ array_configuration_detail.stderr }}
+          {% endif %}
+
+          ============================================================
+          END OF REPORT
+          ============================================================
+
+    - name: Create report directory on target server
+      ansible.builtin.file:
+        path: "{{ ssacli_report_directory }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Write health report to target server
+      ansible.builtin.copy:
+        content: "{{ ssacli_complete_output }}"
+        dest: "{{ ssacli_report_file | regex_replace('\\s+', '') }}"
+        owner: root
+        group: root
+        mode: "0640"
+
+    - name: Publish report in AWX job output
+      ansible.builtin.debug:
+        msg: "{{ ssacli_complete_output.split('\n') }}"
+
+    - name: Publish AWX job artifacts
+      ansible.builtin.set_stats:
+        data:
+          ssacli_report_path: "{{ ssacli_report_file | regex_replace('\\s+', '') }}"
+          ssacli_installed_before_job: "{{ ssacli_was_installed }}"
+          ssacli_package_version: "{{ ssacli_version.stdout | default('Unknown', true) }}"
+          ssacli_controller_status: "{{ controller_status.stdout | default('No output', true) }}"
+          ssacli_logical_drive_status: "{{ logical_drive_status.stdout | default('No output', true) }}"
+          ssacli_physical_drive_status: "{{ physical_drive_status.stdout | default('No output', true) }}"
+        per_host: true
+        aggregate: false
+
+    - name: Warn when health-related problem text is detected
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: The ssacli output contains a possible failed,
+          degraded, predictive-failure, or rebuilding condition.
+          Review the complete report before taking hardware action.
+      when: >-
+        ssacli_complete_output
+        is regex('(?i)(failed|degraded|predictive failure|recovering|rebuilding)')
+
+    - name: Display text report location
+      ansible.builtin.debug:
+        msg: >-
+          Report created on {{ inventory_hostname }}:
+          {{ ssacli_report_file | regex_replace('\s+', '') }}
