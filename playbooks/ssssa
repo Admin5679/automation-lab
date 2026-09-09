@@ -1,0 +1,85 @@
+---
+- name: Check HPE Smart Array disk health
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  vars:
+    ssacli_package: "/root/AutomationLab/packages/ssacli-6.60-8.0_amd64.deb"
+    remote_package: "/tmp/ssacli-6.60-8.0_amd64.deb"
+
+  tasks:
+
+    - name: Confirm target operating system is Debian based
+      assert:
+        that:
+          - ansible_os_family == "Debian"
+        success_msg: "Debian-based operating system detected."
+        fail_msg: "This playbook supports Debian-based systems only."
+
+    - name: Check whether ssacli executable is available
+      command: which ssacli
+      register: ssacli_binary
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Check whether ssacli package is installed
+      shell: dpkg -l | grep -i ssacli
+      register: ssacli_package_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Set initial ssacli installation status
+      set_fact:
+        ssacli_installed_before: "{{ ssacli_binary.rc == 0 or ssacli_package_check.rc == 0 }}"
+
+    - name: Display existing installation status
+      debug:
+        msg: "ssacli installed before playbook: {{ ssacli_installed_before }}"
+
+    - name: Copy ssacli Debian package to target server
+      copy:
+        src: "{{ ssacli_package }}"
+        dest: "{{ remote_package }}"
+        mode: '0644'
+      when: not ssacli_installed_before
+
+    - name: Install ssacli package
+      apt:
+        deb: "{{ remote_package }}"
+        state: present
+      when: not ssacli_installed_before
+
+    - name: Verify ssacli installation
+      command: which ssacli
+      register: ssacli_verify
+      changed_when: false
+
+    - name: Display ssacli path
+      debug:
+        msg: "ssacli found at {{ ssacli_verify.stdout }}"
+
+    - name: Get controller information
+      shell: ssacli ctrl all show
+      register: controller_info
+      changed_when: false
+
+    - name: Display controller information
+      debug:
+        var: controller_info.stdout_lines
+
+    - name: Get physical drive information
+      shell: ssacli ctrl slot=0 pd all show status
+      register: disk_status
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Display disk status
+      debug:
+        var: disk_status.stdout_lines
+
+    - name: Clean up copied package
+      file:
+        path: "{{ remote_package }}"
+        state: absent
+      when: not ssacli_installed_before

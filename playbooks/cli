@@ -1,0 +1,399 @@
+---
+- name: HPE Smart Array Health Check
+  hosts: all
+  become: true
+  gather_facts: true
+  serial: 1
+
+  vars:
+    ssacli_package: "/root/AutomationLab/packages/ssacli-6.60-8.0_amd64.deb"
+    remote_package: "/tmp/ssacli-6.60-8.0_amd64.deb"
+
+    remote_report_directory: "/tmp/ssacli-reports"
+    remote_report_file: "{{ remote_report_directory }}/{{ inventory_hostname }}_ssacli_health_report.txt"
+
+    local_report_directory: "/tmp/ssacli-reports"
+    local_report_file: "{{ local_report_directory }}/{{ inventory_hostname }}_ssacli_health_report.txt"
+
+  tasks:
+
+    #################################################################
+    # Operating System Validation
+    #################################################################
+
+    - name: Confirm target operating system is Debian based
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family == "Debian"
+        success_msg: "Debian-based operating system detected."
+        fail_msg: "This playbook supports Debian-based systems only."
+
+    - name: Get hostname
+      ansible.builtin.command:
+        cmd: hostname
+      register: hostname_info
+      changed_when: false
+
+    - name: Get kernel version
+      ansible.builtin.command:
+        cmd: uname -r
+      register: kernel_info
+      changed_when: false
+
+    #################################################################
+    # SSACLI Installation Validation
+    #################################################################
+
+    - name: Check whether SSACLI executable is available
+      ansible.builtin.shell:
+        cmd: command -v ssacli
+      register: ssacli_binary
+      changed_when: false
+      failed_when: false
+
+    - name: Check whether SSACLI package is installed
+      ansible.builtin.command:
+        cmd: dpkg-query -W -f=${Status} ssacli
+      register: ssacli_package_check
+      changed_when: false
+      failed_when: false
+
+    - name: Set initial SSACLI installation status
+      ansible.builtin.set_fact:
+        ssacli_installed_before: >-
+          {{
+            ssacli_binary.rc == 0 or
+            (
+              ssacli_package_check.rc == 0 and
+              'install ok installed' in ssacli_package_check.stdout
+            )
+          }}
+
+    - name: Set installation action
+      ansible.builtin.set_fact:
+        ssacli_installation_action: >-
+          {{
+            'Already installed before validation'
+            if ssacli_installed_before
+            else 'Installed by this playbook'
+          }}
+
+    #################################################################
+    # Install SSACLI When Missing
+    #################################################################
+
+    - name: Verify local SSACLI package exists
+      ansible.builtin.stat:
+        path: "{{ ssacli_package }}"
+      delegate_to: localhost
+      become: false
+      register: local_ssacli_package
+      when: not ssacli_installed_before
+
+    - name: Stop when local SSACLI package is missing
+      ansible.builtin.fail:
+        msg: "SSACLI package was not found at {{ ssacli_package }}"
+      when:
+        - not ssacli_installed_before
+        - not local_ssacli_package.stat.exists
+
+    - name: Copy SSACLI package to target server
+      ansible.builtin.copy:
+        src: "{{ ssacli_package }}"
+        dest: "{{ remote_package }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when: not ssacli_installed_before
+
+    - name: Install SSACLI package
+      ansible.builtin.apt:
+        deb: "{{ remote_package }}"
+        state: present
+      when: not ssacli_installed_before
+
+    - name: Verify SSACLI installation
+      ansible.builtin.shell:
+        cmd: command -v ssacli
+      register: ssacli_verify
+      changed_when: false
+      failed_when: ssacli_verify.rc != 0
+
+    - name: Get SSACLI package version
+      ansible.builtin.command:
+        cmd: dpkg-query -W -f=${Version} ssacli
+      register: ssacli_package_version
+      changed_when: false
+      failed_when: false
+
+    - name: Get SSACLI utility version
+      ansible.builtin.command:
+        cmd: ssacli version
+      register: ssacli_version
+      changed_when: false
+      failed_when: false
+
+    #################################################################
+    # Controller Information
+    #################################################################
+
+    - name: Get controller information
+      ansible.builtin.command:
+        cmd: ssacli ctrl all show
+      register: controller_information
+      changed_when: false
+      failed_when: false
+
+    - name: Get controller status
+      ansible.builtin.command:
+        cmd: ssacli ctrl all show status
+      register: controller_status
+      changed_when: false
+      failed_when: false
+
+    - name: Get controller details
+      ansible.builtin.command:
+        cmd: ssacli ctrl all show detail
+      register: controller_detail
+      changed_when: false
+      failed_when: false
+
+    #################################################################
+    # RAID Configuration
+    #################################################################
+
+    - name: Get RAID configuration
+      ansible.builtin.command:
+        cmd: ssacli ctrl all show config
+      register: raid_config
+      changed_when: false
+      failed_when: false
+
+    #################################################################
+    # Physical Drive Information
+    #################################################################
+
+    - name: Get physical drive status
+      ansible.builtin.command:
+        cmd: ssacli ctrl all pd all show status
+      register: physical_drive_status
+      changed_when: false
+      failed_when: false
+
+    - name: Get physical drive details
+      ansible.builtin.command:
+        cmd: ssacli ctrl all pd all show detail
+      register: physical_drive_detail
+      changed_when: false
+      failed_when: false
+
+    #################################################################
+    # Logical Drive Information
+    #################################################################
+
+    - name: Get logical drive status
+      ansible.builtin.command:
+        cmd: ssacli ctrl all ld all show status
+      register: logical_drive_status
+      changed_when: false
+      failed_when: false
+
+    - name: Get logical drive details
+      ansible.builtin.command:
+        cmd: ssacli ctrl all ld all show detail
+      register: logical_drive_detail
+      changed_when: false
+      failed_when: false
+
+    #################################################################
+    # Linux Storage Information
+    #################################################################
+
+    - name: Get filesystem usage
+      ansible.builtin.command:
+        cmd: df -h
+      register: filesystem_usage
+      changed_when: false
+
+    - name: Get inode usage
+      ansible.builtin.command:
+        cmd: df -i
+      register: inode_usage
+      changed_when: false
+
+    - name: Get block device information
+      ansible.builtin.command:
+        cmd: lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS
+      register: block_devices
+      changed_when: false
+
+    #################################################################
+    # Determine Overall Result
+    #################################################################
+
+    - name: Determine whether storage warning is present
+      ansible.builtin.set_fact:
+        storage_warning_detected: >-
+          {{
+            (
+              controller_status.stdout ~ ' ' ~
+              controller_status.stderr ~ ' ' ~
+              physical_drive_status.stdout ~ ' ' ~
+              physical_drive_status.stderr ~ ' ' ~
+              logical_drive_status.stdout ~ ' ' ~
+              logical_drive_status.stderr
+            )
+            is regex('(?i)(failed|failure|degraded|predictive|recovering|rebuilding)')
+          }}
+
+    - name: Set overall storage validation result
+      ansible.builtin.set_fact:
+        overall_storage_status: >-
+          {{
+            'ATTENTION REQUIRED'
+            if storage_warning_detected
+            else
+            (
+              'NO SUPPORTED HPE CONTROLLER DETECTED'
+              if controller_information.rc != 0
+              else 'HEALTHY'
+            )
+          }}
+
+    #################################################################
+    # Create Clean Text Report
+    #################################################################
+
+    - name: Create remote report directory
+      ansible.builtin.file:
+        path: "{{ remote_report_directory }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Generate clean SSACLI health report
+      ansible.builtin.copy:
+        dest: "{{ remote_report_file }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          ============================================================
+          HPE SMART ARRAY HEALTH REPORT
+          ============================================================
+
+          SERVER INFORMATION
+          ------------------------------------------------------------
+          Hostname            : {{ hostname_info.stdout }}
+          Inventory Name      : {{ inventory_hostname }}
+          Operating System    : {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Kernel              : {{ kernel_info.stdout }}
+          Report Date         : {{ ansible_date_time.iso8601 }}
+
+          SSACLI INFORMATION
+          ------------------------------------------------------------
+          Installation Status : {{ ssacli_installation_action }}
+          Executable Path     : {{ ssacli_verify.stdout | default('Not available', true) }}
+          Package Version     : {{ ssacli_package_version.stdout | default('Not available', true) }}
+          Utility Version     : {{ ssacli_version.stdout | default('Not available', true) }}
+
+          CONTROLLER INFORMATION
+          ------------------------------------------------------------
+          {{ controller_information.stdout | default(controller_information.stderr, true) | default('No controller information returned', true) }}
+
+          CONTROLLER STATUS
+          ------------------------------------------------------------
+          {{ controller_status.stdout | default(controller_status.stderr, true) | default('No controller status returned', true) }}
+
+          CONTROLLER DETAILS
+          ------------------------------------------------------------
+          {{ controller_detail.stdout | default(controller_detail.stderr, true) | default('No controller details returned', true) }}
+
+          RAID CONFIGURATION
+          ------------------------------------------------------------
+          {{ raid_config.stdout | default(raid_config.stderr, true) | default('No RAID configuration returned', true) }}
+
+          PHYSICAL DRIVE STATUS
+          ------------------------------------------------------------
+          {{ physical_drive_status.stdout | default(physical_drive_status.stderr, true) | default('No physical drive status returned', true) }}
+
+          PHYSICAL DRIVE DETAILS
+          ------------------------------------------------------------
+          {{ physical_drive_detail.stdout | default(physical_drive_detail.stderr, true) | default('No physical drive details returned', true) }}
+
+          LOGICAL DRIVE STATUS
+          ------------------------------------------------------------
+          {{ logical_drive_status.stdout | default(logical_drive_status.stderr, true) | default('No logical drive status returned', true) }}
+
+          LOGICAL DRIVE DETAILS
+          ------------------------------------------------------------
+          {{ logical_drive_detail.stdout | default(logical_drive_detail.stderr, true) | default('No logical drive details returned', true) }}
+
+          FILESYSTEM USAGE
+          ------------------------------------------------------------
+          {{ filesystem_usage.stdout }}
+
+          INODE USAGE
+          ------------------------------------------------------------
+          {{ inode_usage.stdout }}
+
+          BLOCK DEVICES
+          ------------------------------------------------------------
+          {{ block_devices.stdout }}
+
+          OVERALL VALIDATION RESULT
+          ------------------------------------------------------------
+          Storage Status      : {{ overall_storage_status }}
+          Controller Check RC : {{ controller_status.rc }}
+          Physical Drive RC   : {{ physical_drive_status.rc }}
+          Logical Drive RC    : {{ logical_drive_status.rc }}
+
+          ============================================================
+          END OF REPORT
+          ============================================================
+
+    #################################################################
+    # Fetch Report to Ansible Controller
+    #################################################################
+
+    - name: Create local report directory
+      ansible.builtin.file:
+        path: "{{ local_report_directory }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Fetch report to Ansible controller
+      ansible.builtin.fetch:
+        src: "{{ remote_report_file }}"
+        dest: "{{ local_report_file }}"
+        flat: true
+
+    #################################################################
+    # Clean Up Temporary Package
+    #################################################################
+
+    - name: Remove copied SSACLI package
+      ansible.builtin.file:
+        path: "{{ remote_package }}"
+        state: absent
+      when: not ssacli_installed_before
+
+    #################################################################
+    # Final Summary
+    #################################################################
+
+    - name: Show final validation summary
+      ansible.builtin.debug:
+        msg: >-
+          Host={{ inventory_hostname}};
+          SSACLI={{ ssacli_installation_action}};
+          Path={{ ssacli_verify.stdout | default('Not available', true) }};
+          PackageVersion={{ ssacli_package_version.stdout | default('Not available', true) }};
+          Controller={{ controller_information.stdout | trim | default('Not detected', true) }};
+          StorageStatus={{ overall_storage_status }};
+          RemoteReport={{ remote_report_file }};
+          LocalReport={{ local_report_file }}

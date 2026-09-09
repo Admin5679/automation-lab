@@ -1,3 +1,4 @@
 [lab_targets]
-ubuntu-server ansible_host=192.168.29.183 ansible_user=root
-ubuntu-server1 ansible_host=192.168.29.4 ansible_user=root
+#ubuntu-server ansible_host=192.168.29.183 ansible_user=root
+#ubuntu-server1 ansible_host=192.168.29.4 ansible_user=root
+enst26m01c01n00s01 ansible_host=10.194.35.4 ansible_user=pthurai.admin

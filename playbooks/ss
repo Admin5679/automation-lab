@@ -7,8 +7,8 @@
 
   vars:
     ssacli_package_name: "ssacli"
-    ssacli_deb_source: "../files/ssacli.deb"
-    ssacli_deb_remote: "/tmp/ssacli.deb"
+    ssacli_deb_source: "/root/AutomationLab/packages/ssacli-6.60-8.0_amd64.deb"
+    ssacli_deb_remote: "/tmp/ssacli-6.60-8.0_amd64.deb"
     ssacli_report_directory: "/var/tmp/ssacli-reports"
     ssacli_report_file: >-
       {{ ssacli_report_directory }}/ssacli_health_

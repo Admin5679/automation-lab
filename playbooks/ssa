@@ -1,0 +1,239 @@
+---
+- name: HPE Smart Array Health Check
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  vars:
+    ssacli_package: "/root/AutomationLab/packages/ssacli-6.60-8.0_amd64.deb"
+    remote_package: "/tmp/ssacli-6.60-8.0_amd64.deb"
+    report_file: "/tmp/ssacli_health_report.txt"
+
+  tasks:
+
+    - name: Confirm Debian based OS
+      assert:
+        that:
+          - ansible_os_family == "Debian"
+        success_msg: "Debian based OS detected"
+        fail_msg: "Only Debian based OS supported"
+
+    - name: Check hostname
+      command: hostname
+      register: hostname_info
+      changed_when: false
+
+    - name: Check kernel version
+      command: uname -r
+      register: kernel_info
+      changed_when: false
+
+    - name: Check ssacli binary
+      command: which ssacli
+      register: ssacli_binary
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Check ssacli package
+      shell: dpkg -l | grep -i ssacli
+      register: ssacli_package_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Set installation status
+      set_fact:
+        ssacli_installed_before: "{{ ssacli_binary.rc == 0 or ssacli_package_check.rc == 0 }}"
+
+    - name: Display installation status
+      debug:
+        msg: "SSACLI Installed : {{ ssacli_installed_before }}"
+
+    - name: Copy package if missing
+      copy:
+        src: "{{ ssacli_package }}"
+        dest: "{{ remote_package }}"
+        mode: "0644"
+      when: not ssacli_installed_before
+
+    - name: Install ssacli
+      apt:
+        deb: "{{ remote_package }}"
+        state: present
+      when: not ssacli_installed_before
+
+    - name: Verify installation
+      command: which ssacli
+      register: ssacli_verify
+      changed_when: false
+
+    - name: Get ssacli version
+      shell: ssacli version
+      register: ssacli_version
+      ignore_errors: yes
+      changed_when: false
+
+    #################################################################
+    # Controller Information
+    #################################################################
+
+    - name: Get controller status
+      shell: ssacli ctrl all show status
+      register: controller_status
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Get controller detail
+      shell: ssacli ctrl all show detail
+      register: controller_detail
+      ignore_errors: yes
+      changed_when: false
+
+    #################################################################
+    # RAID Configuration
+    #################################################################
+
+    - name: Get RAID configuration
+      shell: ssacli ctrl all show config
+      register: raid_config
+      ignore_errors: yes
+      changed_when: false
+
+    #################################################################
+    # Physical Drives
+    #################################################################
+
+    - name: Get physical drive status
+      shell: ssacli ctrl all pd all show status
+      register: physical_drives
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Get physical drive details
+      shell: ssacli ctrl all pd all show detail
+      register: physical_drives_detail
+      ignore_errors: yes
+      changed_when: false
+
+    #################################################################
+    # Logical Drives
+    #################################################################
+
+    - name: Get logical drive status
+      shell: ssacli ctrl all ld all show status
+      register: logical_drives
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Get logical drive details
+      shell: ssacli ctrl all ld all show detail
+      register: logical_drives_detail
+      ignore_errors: yes
+      changed_when: false
+
+    #################################################################
+    # Linux Storage Information
+    #################################################################
+
+    - name: Get filesystem usage
+      command: df -h
+      register: filesystem_usage
+      changed_when: false
+
+    - name: Get block devices
+      command: lsblk
+      register: block_devices
+      changed_when: false
+
+    #################################################################
+    # Generate Health Report
+    #################################################################
+
+    - name: Generate report
+      copy:
+        dest: "{{ report_file }}"
+        content: |
+          =====================================================
+          HPE SMART ARRAY HEALTH REPORT
+          =====================================================
+
+          Hostname:
+          {{ hostname_info.stdout }}
+
+          OS:
+          {{ ansible_distribution }} {{ ansible_distribution_version }}
+
+          Kernel:
+          {{ kernel_info.stdout }}
+
+          -----------------------------------------------------
+          SSACLI VERSION
+          -----------------------------------------------------
+          {{ ssacli_version.stdout | default('Not Available') }}
+
+          -----------------------------------------------------
+          CONTROLLER STATUS
+          -----------------------------------------------------
+          {{ controller_status.stdout | default('No Controller Found') }}
+
+          -----------------------------------------------------
+          CONTROLLER DETAIL
+          -----------------------------------------------------
+          {{ controller_detail.stdout | default('No Controller Found') }}
+
+          -----------------------------------------------------
+          RAID CONFIGURATION
+          -----------------------------------------------------
+          {{ raid_config.stdout | default('No RAID Found') }}
+
+          -----------------------------------------------------
+          PHYSICAL DRIVE STATUS
+          -----------------------------------------------------
+          {{ physical_drives.stdout | default('No Physical Drives Found') }}
+
+          -----------------------------------------------------
+          PHYSICAL DRIVE DETAILS
+          -----------------------------------------------------
+          {{ physical_drives_detail.stdout | default('No Physical Drives Found') }}
+
+          -----------------------------------------------------
+          LOGICAL DRIVE STATUS
+          -----------------------------------------------------
+          {{ logical_drives.stdout | default('No Logical Drives Found') }}
+
+          -----------------------------------------------------
+          LOGICAL DRIVE DETAILS
+          -----------------------------------------------------
+          {{ logical_drives_detail.stdout | default('No Logical Drives Found') }}
+
+          -----------------------------------------------------
+          FILESYSTEM USAGE
+          -----------------------------------------------------
+          {{ filesystem_usage.stdout }}
+
+          -----------------------------------------------------
+          BLOCK DEVICES
+          -----------------------------------------------------
+          {{ block_devices.stdout }}
+
+          =====================================================
+          END OF REPORT
+          =====================================================
+
+    - name: Show report location
+      debug:
+        msg: "Health Report Saved At {{ report_file }}"
+
+    - name: Display report content
+      shell: cat {{ report_file }}
+      register: report_output
+      changed_when: false
+
+    - name: Print report
+      debug:
+        var: report_output.stdout_lines
+
+    - name: Remove copied package
+      file:
+        path: "{{ remote_package }}"
+        state: absent
+      when: not ssacli_installed_before

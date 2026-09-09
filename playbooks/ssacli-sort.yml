@@ -1,0 +1,523 @@
+---
+- name: HPE Smart Array Health Check
+  hosts: all
+  become: true
+  gather_facts: true
+  serial: 1
+
+  vars:
+
+    #################################################################
+    # Controller Configuration
+    #################################################################
+
+    controller_slot: "0"
+
+    #################################################################
+    # SSACLI Package Locations
+    #################################################################
+
+    ssacli_package: "/root/AutomationLab/packages/ssacli-6.60-8.0_amd64.deb"
+
+    remote_package: "/tmp/ssacli-6.60-8.0_amd64.deb"
+
+    #################################################################
+    # Report Locations
+    #################################################################
+
+    remote_report_directory: "/tmp/ssacli-reports"
+
+    remote_report_file: >-
+      {{ remote_report_directory }}/{{ inventory_hostname }}_ssacli_health_report.txt
+
+    local_report_directory: "/tmp/ssacli-reports"
+
+    local_report_file: >-
+      {{ local_report_directory }}/{{ inventory_hostname }}_ssacli_health_report.txt
+
+  tasks:
+
+    #################################################################
+    # Operating System Validation
+    #################################################################
+
+    - name: Confirm target operating system is Debian based
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family == "Debian"
+        success_msg: "Debian-based operating system detected."
+        fail_msg: "This playbook supports Debian-based systems only."
+
+    - name: Get hostname
+      ansible.builtin.command:
+        cmd: hostname
+      register: hostname_info
+      changed_when: false
+
+    - name: Get kernel version
+      ansible.builtin.command:
+        cmd: uname -r
+      register: kernel_info
+      changed_when: false
+
+    - name: Get server uptime
+      ansible.builtin.command:
+        cmd: uptime -p
+      register: uptime_info
+      changed_when: false
+      failed_when: false
+
+    - name: Get server architecture
+      ansible.builtin.command:
+        cmd: uname -m
+      register: architecture_info
+      changed_when: false
+      failed_when: false
+
+    #################################################################
+    # SSACLI Installation Validation
+    #################################################################
+
+    - name: Check whether SSACLI executable is available
+      ansible.builtin.shell:
+        cmd: command -v ssacli
+      register: ssacli_binary
+      changed_when: false
+      failed_when: false
+
+    - name: Check whether SSACLI package is installed
+      ansible.builtin.command:
+        argv:
+          - dpkg-query
+          - -W
+          - "-f=${Status}"
+          - ssacli
+      register: ssacli_package_check
+      changed_when: false
+      failed_when: false
+
+    - name: Set initial SSACLI installation status
+      ansible.builtin.set_fact:
+        ssacli_installed_before: >-
+          {{
+            ssacli_binary.rc == 0 or
+            (
+              ssacli_package_check.rc == 0 and
+              'install ok installed'
+              in ssacli_package_check.stdout
+            )
+          }}
+
+    - name: Set SSACLI installation action
+      ansible.builtin.set_fact:
+        ssacli_installation_action: >-
+          {{
+            'Already installed before validation'
+            if ssacli_installed_before
+            else
+            'Installed by this playbook'
+          }}
+
+    #################################################################
+    # Install SSACLI When Missing
+    #################################################################
+
+    - name: Verify local SSACLI package exists
+      ansible.builtin.stat:
+        path: "{{ ssacli_package }}"
+      delegate_to: localhost
+      become: false
+      register: local_ssacli_package
+      when: not ssacli_installed_before
+
+    - name: Stop when local SSACLI package is missing
+      ansible.builtin.fail:
+        msg: >-
+          SSACLI package was not found on the Ansible controller at
+          {{ ssacli_package }}
+      when:
+        - not ssacli_installed_before
+        - not local_ssacli_package.stat.exists
+
+    - name: Copy SSACLI package to target server
+      ansible.builtin.copy:
+        src: "{{ ssacli_package }}"
+        dest: "{{ remote_package }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when: not ssacli_installed_before
+
+    - name: Install SSACLI package
+      ansible.builtin.apt:
+        deb: "{{ remote_package }}"
+        state: present
+      when: not ssacli_installed_before
+
+    #################################################################
+    # Verify SSACLI Installation
+    #################################################################
+
+    - name: Verify SSACLI executable after installation
+      ansible.builtin.shell:
+        cmd: command -v ssacli
+      register: ssacli_verify
+      changed_when: false
+      failed_when: ssacli_verify.rc != 0
+
+    - name: Get SSACLI package version
+      ansible.builtin.command:
+        argv:
+          - dpkg-query
+          - -W
+          - "-f=${Version}"
+          - ssacli
+      register: ssacli_package_version
+      changed_when: false
+      failed_when: false
+
+    - name: Get SSACLI utility version
+      ansible.builtin.command:
+        cmd: ssacli version
+      register: ssacli_version
+      changed_when: false
+      failed_when: false
+
+    #################################################################
+    # Load SCSI Generic Module
+    #################################################################
+
+    - name: Check whether SCSI generic module is loaded
+      ansible.builtin.shell:
+        cmd: lsmod | grep -w sg
+      register: sg_module_check
+      changed_when: false
+      failed_when: false
+
+    - name: Load SCSI generic module when missing
+      ansible.builtin.command:
+        cmd: modprobe sg
+      register: sg_module_load
+      changed_when: sg_module_load.rc == 0
+      failed_when: false
+      when: sg_module_check.rc != 0
+
+    - name: Verify SCSI generic module status
+      ansible.builtin.shell:
+        cmd: lsmod | grep -w sg
+      register: sg_module_status
+      changed_when: false
+      failed_when: false
+
+    #################################################################
+    # Controller Information
+    #################################################################
+
+    - name: Get controller information
+      ansible.builtin.command:
+        cmd: >-
+          ssacli ctrl slot={{ controller_slot }} show
+      register: controller_information
+      changed_when: false
+      failed_when: false
+
+    - name: Get controller status
+      ansible.builtin.command:
+        cmd: >-
+          ssacli ctrl slot={{ controller_slot }} show status
+      register: controller_status
+      changed_when: false
+      failed_when: false
+
+    - name: Get controller details
+      ansible.builtin.command:
+        cmd: >-
+          ssacli ctrl slot={{ controller_slot }} show detail
+      register: controller_detail
+      changed_when: false
+      failed_when: false
+
+    #################################################################
+    # RAID Configuration
+    #################################################################
+
+    - name: Get RAID configuration
+      ansible.builtin.command:
+        cmd: >-
+          ssacli ctrl slot={{ controller_slot }} show config
+      register: raid_config
+      changed_when: false
+      failed_when: false
+
+    - name: Get detailed RAID configuration
+      ansible.builtin.command:
+        cmd: >-
+          ssacli ctrl slot={{ controller_slot }} show config detail
+      register: raid_config_detail
+      changed_when: false
+      failed_when: false
+
+    #################################################################
+    # Array Information
+    #################################################################
+
+    - name: Get array status
+      ansible.builtin.command:
+        cmd: >-
+          ssacli ctrl slot={{ controller_slot }}
+          array all show status
+      register: array_status
+      changed_when: false
+      failed_when: false
+
+    - name: Get array details
+      ansible.builtin.command:
+        cmd: >-
+          ssacli ctrl slot={{ controller_slot }}
+          array all show detail
+      register: array_detail
+      changed_when: false
+      failed_when: false
+
+    #################################################################
+    # Physical Drive Information
+    #################################################################
+
+    - name: Get physical drive status
+      ansible.builtin.command:
+        cmd: >-
+          ssacli ctrl slot={{ controller_slot }}
+          pd all show status
+      register: physical_drive_status
+      changed_when: false
+      failed_when: false
+
+    - name: Get physical drive details
+      ansible.builtin.command:
+        cmd: >-
+          ssacli ctrl slot={{ controller_slot }}
+          pd all show detail
+      register: physical_drive_detail
+      changed_when: false
+      failed_when: false
+
+    #################################################################
+    # Logical Drive Information
+    #################################################################
+
+    - name: Get logical drive status
+      ansible.builtin.command:
+        cmd: >-
+          ssacli ctrl slot={{ controller_slot }}
+          ld all show status
+      register: logical_drive_status
+      changed_when: false
+      failed_when: false
+
+    - name: Get logical drive details
+      ansible.builtin.command:
+        cmd: >-
+          ssacli ctrl slot={{ controller_slot }}
+          ld all show detail
+      register: logical_drive_detail
+      changed_when: false
+      failed_when: false
+
+    #################################################################
+    # Cache, Battery, Temperature and Firmware
+    #################################################################
+
+    - name: Extract cache battery temperature and firmware information
+      ansible.builtin.shell:
+        cmd: >-
+          ssacli ctrl slot={{ controller_slot }} show detail |
+          grep -Ei
+          'cache|battery|capacitor|backup power|temperature|firmware'
+      register: cache_battery_status
+      changed_when: false
+      failed_when: false
+
+    #################################################################
+    # Linux Filesystem Information
+    #################################################################
+
+    - name: Get filesystem usage
+      ansible.builtin.command:
+        cmd: df -h
+      register: filesystem_usage
+      changed_when: false
+      failed_when: false
+
+    - name: Get inode usage
+      ansible.builtin.command:
+        cmd: df -i
+      register: inode_usage
+      changed_when: false
+      failed_when: false
+
+    #################################################################
+    # Linux Block Device Information
+    #################################################################
+
+    - name: Get block device information
+      ansible.builtin.command:
+        argv:
+          - lsblk
+          - -o
+          - NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT
+      register: block_devices
+      changed_when: false
+      failed_when: false
+
+    #################################################################
+    # Linux Mount Information
+    #################################################################
+
+    - name: Get mounted filesystem information
+      ansible.builtin.command:
+        cmd: mount
+      register: mount_information
+      changed_when: false
+      failed_when: false
+
+    #################################################################
+    # Kernel Storage Messages
+    #################################################################
+
+    - name: Get recent kernel disk errors
+      ansible.builtin.shell:
+        cmd: >-
+          dmesg -T |
+          grep -Ei
+          'disk error|I/O error|medium error|bad sector|failed command' |
+          tail -100
+      register: kernel_disk_errors
+      changed_when: false
+      failed_when: false
+
+    #################################################################
+    # Determine Controller Detection
+    #################################################################
+
+    - name: Determine whether HPE controller is detected
+      ansible.builtin.set_fact:
+        controller_detected: >-
+          {{
+            controller_information.rc == 0 and
+            controller_information.stdout | trim | length > 0
+          }}
+
+    #################################################################
+    # Count Arrays
+    #################################################################
+
+    - name: Count arrays returned by SSACLI
+      ansible.builtin.set_fact:
+        array_count: >-
+          {{
+            raid_config.stdout_lines
+            | select('match', '^[ ]*Array [A-Za-z0-9]+')
+            | list
+            | length
+          }}
+
+    #################################################################
+    # Count Physical Drives
+    #################################################################
+
+    - name: Count physical drives from physical drive status
+      ansible.builtin.set_fact:
+        physical_drive_count_from_status: >-
+          {{
+            physical_drive_status.stdout_lines
+            | select('search', 'physicaldrive')
+            | list
+            | length
+          }}
+
+    - name: Count physical drives from RAID configuration
+      ansible.builtin.set_fact:
+        physical_drive_count_from_config: >-
+          {{
+            raid_config.stdout_lines
+            | select('search', 'physicaldrive')
+            | list
+            | length
+          }}
+
+    - name: Set final physical drive count
+      ansible.builtin.set_fact:
+        physical_drive_count: >-
+          {{
+            physical_drive_count_from_status
+            if physical_drive_count_from_status | int > 0
+            else physical_drive_count_from_config
+          }}
+
+    #################################################################
+    # Count Logical Drives
+    #################################################################
+
+    - name: Count logical drives from logical drive status
+      ansible.builtin.set_fact:
+        logical_drive_count_from_status: >-
+          {{
+            logical_drive_status.stdout_lines
+            | select('search', 'logicaldrive')
+            | list
+            | length
+          }}
+
+    - name: Count logical drives from RAID configuration
+      ansible.builtin.set_fact:
+        logical_drive_count_from_config: >-
+          {{
+            raid_config.stdout_lines
+            | select('search', 'logicaldrive')
+            | list
+            | length
+          }}
+
+    - name: Set final logical drive count
+      ansible.builtin.set_fact:
+        logical_drive_count: >-
+          {{
+            logical_drive_count_from_status
+            if logical_drive_count_from_status | int > 0
+            else logical_drive_count_from_config
+          }}
+
+    #################################################################
+    # Determine Storage Warnings
+    #################################################################
+
+    - name: Determine whether storage warning is present
+      ansible.builtin.set_fact:
+        storage_warning_detected: >-
+          {{
+            (
+              controller_status.stdout ~ ' ' ~
+              controller_status.stderr ~ ' ' ~
+              raid_config.stdout ~ ' ' ~
+              raid_config.stderr ~ ' ' ~
+              array_status.stdout ~ ' ' ~
+              array_status.stderr ~ ' ' ~
+              physical_drive_status.stdout ~ ' ' ~
+              physical_drive_status.stderr ~ ' ' ~
+              logical_drive_status.stdout ~ ' ' ~
+              logical_drive_status.stderr
+            )
+            is regex(
+              '(?i)(failed|failure|degraded|predictive failure|offline|recovering|rebuilding)'
+            )
+          }}
+
+    - name: Determine whether kernel disk warning is present
+      ansible.builtin.set_fact:
+        kernel_disk_warning_detected: >-
+          {{
+            kernel_disk_errors.stdout | trim | length > 0
+          }}
+
+    #################################################################
+    # Set Overall Storage Status
